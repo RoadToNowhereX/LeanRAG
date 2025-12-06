@@ -34,6 +34,7 @@ def chunk_documents(
             })
 
     return results
+
 if __name__ == "__main__":
     max_token_size=1024
     overlap_token_size=128

@@ -4,7 +4,9 @@ import tiktoken
 import re
 import torch
 import numpy as np
-from langchain_huggingface.embeddings import HuggingFaceEmbeddings
+import gc
+from sentence_transformers import SentenceTransformer
+from tqdm import tqdm
 from hashlib import md5
 def compute_mdhash_id(content, prefix: str = ""):
     return prefix + md5(content.encode()).hexdigest()
@@ -45,6 +47,7 @@ def semantic_chunk_documents(
     model_path,
     max_token_size=512,
     overlap_token_size=64,
+    batch_size=32,
 ):
     """
     使用语义相似度进行文档切分
@@ -52,35 +55,51 @@ def semantic_chunk_documents(
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Loading embedding model from {model_path} on {device}...")
     
-    model_kwargs = {'trust_remote_code': True, 'device': device}
-    embedder = HuggingFaceEmbeddings(
-        model_name=model_path,
-        model_kwargs=model_kwargs,
-    )
-    
+    # model_kwargs = {'trust_remote_code': True, 'device': device} # Replaced with SentenceTransformer
+    try:
+        model = SentenceTransformer(model_path, trust_remote_code=True, device=device)
+    except Exception as e:
+        print(f"Failed to load sentence transformer model: {e}")
+        raise e
+        
     ENCODER = tiktoken.get_encoding("cl100k_base")
     results = []
     
     for doc_text in docs:
-        sentences = re.split(r'(?<=[.!?。！？])\s*', doc_text)
+        # 优先处理带有引号的句子结束符，然后再处理普通结束符
+        # pattern: 标点符号 + 可选的引号 + 可选的空白
+        # 使用特殊分隔符进行切分，避免误伤原有的换行符(虽然原逻辑也不切分无标点换行)
+        # Pattern matches: [.!?。！？] followed optionally by [”」], then whitespace
+        doc_text = re.sub(r'([.!?。！？][”」]?)\s*', r'\1<|SEP|>', doc_text)
+        sentences = doc_text.split('<|SEP|>')
         sentences = [s.strip() for s in sentences if s.strip()]
         
         if not sentences:
             continue
             
-        embeddings = embedder.embed_documents(sentences)
+        # 使用 batch_size 进行批量推理，并显示进度条
+        print(f"Encoding {len(sentences)} sentences...")
+        embeddings = model.encode(
+            sentences,
+            batch_size=batch_size,
+            show_progress_bar=True,
+            convert_to_numpy=True,
+            normalize_embeddings=True # Optional: normalize for cosine similarity
+        )
+        
         sentence_lens = [len(ENCODER.encode(s)) for s in sentences]
         
         similarities = []
         for i in range(len(sentences) - 1):
             vec_a = embeddings[i]
             vec_b = embeddings[i+1]
-            norm_a = np.linalg.norm(vec_a)
-            norm_b = np.linalg.norm(vec_b)
-            if norm_a == 0 or norm_b == 0:
-                sim = 0
-            else:
-                sim = np.dot(vec_a, vec_b) / (norm_a * norm_b)
+            
+            # Since we used normalize_embeddings=True, we can just use dot product
+            # But to be safe and consistent with previous logic (handling zeros), we'll keep the safe division check or simplified dot product
+            # If normalized, norms are 1.
+            
+            # Replicating logic using dot product which represents cosine similarity for normalized vectors
+            sim = np.dot(vec_a, vec_b) 
             similarities.append(sim)
             
         current_chunk_indices = []
@@ -154,11 +173,7 @@ def semantic_chunk_documents(
                 for back_i in range(last_included_idx, -1, -1):
                      overlap_tokens_count += sentence_lens[back_i]
                      if overlap_tokens_count > overlap_token_size:
-                         overlap_start_idx = back_i + 1 # Start from the one *after* this one to keep overlap size constrained?
-                         # Or include this one? User said overlap_token_size.
-                         # If including back_i exceeds overlap, we usually shouldn't include it if we want strict size.
-                         # But let's extend as much as possible.
-                         overlap_start_idx = back_i
+                         overlap_start_idx = back_i 
                          break
                      overlap_start_idx = back_i 
                      
@@ -173,6 +188,15 @@ def semantic_chunk_documents(
             
             i += 1
             
+    
+    # Cleanup memory
+    del model
+    if 'embeddings' in locals():
+        del embeddings
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        
     return results
 
 if __name__ == "__main__":

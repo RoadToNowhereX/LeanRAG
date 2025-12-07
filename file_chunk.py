@@ -65,14 +65,79 @@ def semantic_chunk_documents(
     ENCODER = tiktoken.get_encoding("cl100k_base")
     results = []
     
+    def split_text_by_sentences(text):
+        """
+        Split text into sentences, ignoring delimiters inside quotes (both EN "" and CN 「」).
+        Supports: . ! ? ... … and their variants ！？。
+        """
+        sentences = []
+        current_start = 0
+        quote_stack = [] 
+        # Map opening quotes to closing quotes
+        quote_pairs = {'"': '"', '“': '”', '「': '」'}
+        
+        in_quote = False
+        expected_close_quote = None
+        
+        i = 0
+        length = len(text)
+        
+        while i < length:
+            char = text[i]
+            
+            # 1. Handle Quotes
+            if in_quote:
+                if char == expected_close_quote:
+                    # Closing the current quote
+                    in_quote = False
+                    expected_close_quote = None
+            else:
+                # Check for opening quotes
+                if char in quote_pairs:
+                    in_quote = True
+                    expected_close_quote = quote_pairs[char]
+                    
+            # 2. Check for Delimiter if NOT in quote
+            if not in_quote:
+                # Check if we are at a delimiter
+                match_len = 0
+                
+                # Check for ...
+                if i + 3 <= length and text[i:i+3] == '...':
+                    match_len = 3
+                elif char == '…':
+                    match_len = 1
+                elif char in '.!?。！？':
+                    match_len = 1
+                
+                if match_len > 0:
+                     # Found a delimiter outside quotes
+                     end_idx = i + match_len
+                     
+                     # Consume optional closing quotes immediately after
+                     if end_idx < length and text[end_idx] in ['”', '」', '"']:
+                         end_idx += 1
+                     
+                     # Extract sentence
+                     sentence = text[current_start:end_idx].strip()
+                     if sentence:
+                         sentences.append(sentence)
+                     
+                     current_start = end_idx
+                     i = end_idx - 1 # Adjust for loop increment
+                     
+            i += 1
+            
+        # Append remaining text
+        if current_start < length:
+             remainder = text[current_start:].strip()
+             if remainder:
+                 sentences.append(remainder)
+                 
+        return sentences
+
     for doc_text in docs:
-        # 优先处理带有引号的句子结束符，然后再处理普通结束符
-        # pattern: 标点符号 + 可选的引号 + 可选的空白
-        # 使用特殊分隔符进行切分，避免误伤原有的换行符(虽然原逻辑也不切分无标点换行)
-        # Pattern matches: [.!?。！？] followed optionally by [”」], then whitespace
-        doc_text = re.sub(r'([.!?。！？][”」]?)\s*', r'\1<|SEP|>', doc_text)
-        sentences = doc_text.split('<|SEP|>')
-        sentences = [s.strip() for s in sentences if s.strip()]
+        sentences = split_text_by_sentences(doc_text)
         
         if not sentences:
             continue

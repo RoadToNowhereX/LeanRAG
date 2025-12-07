@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  leanrag:
+    build: .
+    container_name: LeanRAG-cu128
+    volumes:
+      - .:/app
+      - E:/AI/LLM/Models:/Models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all          # 这里的 all 对应 --gpus all；也可以填数字，如 1
+              capabilities: [gpu]
+    environment:
+      - PYTHONPATH=/app
+    # Keep container running
+    command: tail -f /dev/null

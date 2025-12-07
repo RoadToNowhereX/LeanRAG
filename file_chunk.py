@@ -6,10 +6,83 @@ import torch
 import numpy as np
 import gc
 from sentence_transformers import SentenceTransformer
+from transformers import AutoTokenizer
 from tqdm import tqdm
 from hashlib import md5
 def compute_mdhash_id(content, prefix: str = ""):
     return prefix + md5(content.encode()).hexdigest()
+
+def split_text_by_sentences(text):
+    """
+    Split text into sentences, ignoring delimiters inside quotes (both EN "" and CN 「」).
+    Supports: . ! ? ... … and their variants ！？。
+    """
+    sentences = []
+    current_start = 0
+    
+    # Map opening quotes to closing quotes
+    quote_pairs = {'"': '"', '“': '”', '「': '」'}
+    
+    in_quote = False
+    expected_close_quote = None
+    
+    i = 0
+    length = len(text)
+    
+    while i < length:
+        char = text[i]
+        
+        # 1. Handle Quotes
+        if in_quote:
+            if char == expected_close_quote:
+                # Closing the current quote
+                in_quote = False
+                expected_close_quote = None
+        else:
+            # Check for opening quotes
+            if char in quote_pairs:
+                in_quote = True
+                expected_close_quote = quote_pairs[char]
+                
+        # 2. Check for Delimiter if NOT in quote
+        if not in_quote:
+            # Check if we are at a delimiter
+            match_len = 0
+            
+            # Check for ...
+            if i + 3 <= length and text[i:i+3] == '...':
+                match_len = 3
+            elif char == '…':
+                match_len = 1
+            elif char in '.!?。！？':
+                match_len = 1
+            
+            if match_len > 0:
+                 # Found a delimiter outside quotes
+                 end_idx = i + match_len
+                 
+                 # Consume optional closing quotes immediately after
+                 if end_idx < length and text[end_idx] in ['”', '」', '"']:
+                     end_idx += 1
+                 
+                 # Extract sentence
+                 sentence = text[current_start:end_idx].strip()
+                 if sentence:
+                     sentences.append(sentence)
+                 
+                 current_start = end_idx
+                 i = end_idx - 1 # Adjust for loop increment
+                 
+        i += 1
+        
+    # Append remaining text
+    if current_start < length:
+         remainder = text[current_start:].strip()
+         if remainder:
+             sentences.append(remainder)
+             
+    return sentences
+
 def chunk_documents(
     docs,
     model_name="cl100k_base",
@@ -17,28 +90,59 @@ def chunk_documents(
     overlap_token_size=64,
 ):
     ENCODER = tiktoken.get_encoding(model_name)
-    tokens_list = ENCODER.encode_batch(docs, num_threads=16)
-
     results = []
-    for index, tokens in enumerate(tokens_list):
-        chunk_token_ids = []
-        lengths = []
-
-        for start in range(0, len(tokens), max_token_size - overlap_token_size):
-            chunk = tokens[start : start + max_token_size]
-            chunk_token_ids.append(chunk)
-            lengths.append(len(chunk))
-
-        # 解码所有 chunk
-        chunk_texts = ENCODER.decode_batch(chunk_token_ids)
-
-        for i, text in enumerate(chunk_texts):
-            results.append({
-                # "tokens": lengths[i],
-                "hash_code": compute_mdhash_id(text), ##使用hash进行编码
-                "text": text.strip().replace("\n", ""),
-                # "chunk_order_index": i,
-            })
+    
+    for text in docs:
+        sentences = split_text_by_sentences(text)
+        
+        current_chunk = []
+        current_len = 0
+        
+        # Pre-calculate lengths to avoid repeated encoding if desired, 
+        # but encoding sentence by sentence is fine for now
+        
+        for sentence in sentences:
+            tokens = ENCODER.encode(sentence)
+            length = len(tokens)
+            
+            if current_len + length > max_token_size:
+                # Chunk full, save it
+                if current_chunk:
+                    chunk_text = "".join(current_chunk)
+                    results.append({
+                        "hash_code": compute_mdhash_id(chunk_text),
+                        "text": chunk_text
+                    })
+                
+                # Handle overlap: Keep recent sentences that fit in overlap_token_size
+                back_len = 0
+                overlap_sentences = []
+                for s in reversed(current_chunk):
+                    s_tokens = ENCODER.encode(s)
+                    s_len = len(s_tokens)
+                    if back_len + s_len > overlap_token_size:
+                        break
+                    overlap_sentences.insert(0, s)
+                    back_len += s_len
+                
+                current_chunk = overlap_sentences
+                current_len = back_len
+                
+                # If the single new sentence is extremely long (> max_token_size), 
+                # we must handle it. Current logic will just start a new chunk with it.
+                # If it's still too big, we might want to hard-split it, but requirement says "complete sentences".
+                # We will accept it as an oversized chunk if it is a single sentence.
+                
+            current_chunk.append(sentence)
+            current_len += length
+            
+        # Last chunk
+        if current_chunk:
+             chunk_text = "".join(current_chunk)
+             results.append({
+                "hash_code": compute_mdhash_id(chunk_text),
+                "text": chunk_text
+             })
 
     return results
 
@@ -58,86 +162,19 @@ def semantic_chunk_documents(
     # model_kwargs = {'trust_remote_code': True, 'device': device} # Replaced with SentenceTransformer
     try:
         model = SentenceTransformer(model_path, trust_remote_code=True, device=device)
+        tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     except Exception as e:
-        print(f"Failed to load sentence transformer model: {e}")
+        print(f"Failed to load sentence transformer model or tokenizer: {e}")
         raise e
         
-    ENCODER = tiktoken.get_encoding("cl100k_base")
     results = []
     
-    def split_text_by_sentences(text):
-        """
-        Split text into sentences, ignoring delimiters inside quotes (both EN "" and CN 「」).
-        Supports: . ! ? ... … and their variants ！？。
-        """
-        sentences = []
-        current_start = 0
-        quote_stack = [] 
-        # Map opening quotes to closing quotes
-        quote_pairs = {'"': '"', '“': '”', '「': '」'}
-        
-        in_quote = False
-        expected_close_quote = None
-        
-        i = 0
-        length = len(text)
-        
-        while i < length:
-            char = text[i]
-            
-            # 1. Handle Quotes
-            if in_quote:
-                if char == expected_close_quote:
-                    # Closing the current quote
-                    in_quote = False
-                    expected_close_quote = None
-            else:
-                # Check for opening quotes
-                if char in quote_pairs:
-                    in_quote = True
-                    expected_close_quote = quote_pairs[char]
-                    
-            # 2. Check for Delimiter if NOT in quote
-            if not in_quote:
-                # Check if we are at a delimiter
-                match_len = 0
-                
-                # Check for ...
-                if i + 3 <= length and text[i:i+3] == '...':
-                    match_len = 3
-                elif char == '…':
-                    match_len = 1
-                elif char in '.!?。！？':
-                    match_len = 1
-                
-                if match_len > 0:
-                     # Found a delimiter outside quotes
-                     end_idx = i + match_len
-                     
-                     # Consume optional closing quotes immediately after
-                     if end_idx < length and text[end_idx] in ['”', '」', '"']:
-                         end_idx += 1
-                     
-                     # Extract sentence
-                     sentence = text[current_start:end_idx].strip()
-                     if sentence:
-                         sentences.append(sentence)
-                     
-                     current_start = end_idx
-                     i = end_idx - 1 # Adjust for loop increment
-                     
-            i += 1
-            
-        # Append remaining text
-        if current_start < length:
-             remainder = text[current_start:].strip()
-             if remainder:
-                 sentences.append(remainder)
-                 
-        return sentences
-
+    # Remove local definition of split_text_by_sentences if it exists
+    # And use the global one
+    
     for doc_text in docs:
         sentences = split_text_by_sentences(doc_text)
+        # sentences = [s.strip() for s in sentences if s.strip()] # functions does this
         
         if not sentences:
             continue
@@ -152,7 +189,7 @@ def semantic_chunk_documents(
             normalize_embeddings=True # Optional: normalize for cosine similarity
         )
         
-        sentence_lens = [len(ENCODER.encode(s)) for s in sentences]
+        sentence_lens = [len(tokenizer.encode(s, add_special_tokens=False)) for s in sentences]
         
         similarities = []
         for i in range(len(sentences) - 1):
@@ -256,6 +293,7 @@ def semantic_chunk_documents(
     
     # Cleanup memory
     del model
+    del tokenizer
     if 'embeddings' in locals():
         del embeddings
     gc.collect()

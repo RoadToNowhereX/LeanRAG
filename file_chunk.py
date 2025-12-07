@@ -12,10 +12,14 @@ from hashlib import md5
 def compute_mdhash_id(content, prefix: str = ""):
     return prefix + md5(content.encode()).hexdigest()
 
-def split_text_by_sentences(text):
+def split_text_by_sentences(text, max_sentence_length=512):
     """
     Split text into sentences, ignoring delimiters inside quotes (both EN "" and CN 「」).
     Supports: . ! ? ... … and their variants ！？。
+    Note: EN "" is dangerous, it does not distinguish start and end, only correct grammar can be handled.
+    params:
+        max_sentence_length: If a sentence (or the current accumulating text) exceeds this length,
+                             we assume quotes might be unclosed or too long, and force checking for delimiters.
     """
     sentences = []
     current_start = 0
@@ -31,6 +35,14 @@ def split_text_by_sentences(text):
     
     while i < length:
         char = text[i]
+        
+        # Check current length from start
+        current_len = i - current_start
+        
+        # If we exceed max_sentence_length, we force in_quote to False to potentially break the sentence
+        if in_quote and current_len > max_sentence_length:
+            in_quote = False
+            expected_close_quote = None
         
         # 1. Handle Quotes
         if in_quote:

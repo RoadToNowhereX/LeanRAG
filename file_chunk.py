@@ -78,8 +78,8 @@ def split_text_by_sentences(text, max_sentence_length=1024):
                      end_idx += 1
                  
                  # Extract sentence
-                 sentence = text[current_start:end_idx].strip()
-                 if sentence:
+                 sentence = text[current_start:end_idx]
+                 if sentence.strip():
                      sentences.append(sentence)
                  
                  current_start = end_idx
@@ -89,8 +89,8 @@ def split_text_by_sentences(text, max_sentence_length=1024):
         
     # Append remaining text
     if current_start < length:
-         remainder = text[current_start:].strip()
-         if remainder:
+         remainder = text[current_start:]
+         if remainder.strip():
              sentences.append(remainder)
              
     return sentences
@@ -329,7 +329,7 @@ if __name__ == "__main__":
     
     # 示例输入路径，用户可修改此变量
     # original_text_file = "datasets/mix/mix.jsonl" 
-    original_text_file = "./input/前桌的李同学_校对.txt" # 示例: 纯文本输入
+    original_text_file = "./input/test.txt" # 示例: 纯文本输入
 
     # 获取完整路径
     original_text_file = os.path.abspath(original_text_file)

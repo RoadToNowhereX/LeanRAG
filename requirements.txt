@@ -45,9 +45,6 @@ umap-learn==0.5.9.post2
 urllib3==2.5.0
 # New dependencies
 transformers==4.51.3
-langchain
-langchain-huggingface
-langchain-community
 sentence-transformers==5.1.0
 # Torch with CUDA 12.8 support
 --extra-index-url https://download.pytorch.org/whl/cu128

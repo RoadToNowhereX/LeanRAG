@@ -12,11 +12,11 @@ from hashlib import md5
 def compute_mdhash_id(content, prefix: str = ""):
     return prefix + md5(content.encode()).hexdigest()
 
-def split_text_by_sentences(text, max_sentence_length=512):
+def split_text_by_sentences(text, max_sentence_length=1024):
     """
     Split text into sentences, ignoring delimiters inside quotes (both EN "" and CN 「」).
     Supports: . ! ? ... … and their variants ！？。
-    Note: EN "" is dangerous, it does not distinguish start and end, only correct grammar can be handled.
+    Note: EN "" is dangerous! it does not distinguish start and end, only correct grammar can be handled.
     params:
         max_sentence_length: If a sentence (or the current accumulating text) exceeds this length,
                              we assume quotes might be unclosed or too long, and force checking for delimiters.
@@ -162,6 +162,7 @@ def semantic_chunk_documents(
     docs,
     model_path,
     max_token_size=512,
+    min_token_size=256,
     overlap_token_size=64,
     batch_size=32,
 ):
@@ -245,7 +246,7 @@ def semantic_chunk_documents(
                          
                          # Check if this boundary is a candidate
                          # Boundary is *after* sentences[idx_val].
-                         if temp_len >= (max_token_size - overlap_token_size) and temp_len <= max_token_size:
+                         if temp_len >= min_token_size and temp_len <= max_token_size:
                              if idx_val < len(similarities):
                                  sim = similarities[idx_val]
                                  if sim < best_sim:
@@ -316,6 +317,7 @@ def semantic_chunk_documents(
 
 if __name__ == "__main__":
     max_token_size = 2048
+    min_token_size = 512
     overlap_token_size = 128
     
     # Configuration
@@ -377,6 +379,7 @@ if __name__ == "__main__":
                         data,
                         model_path=embedding_model_path,
                         max_token_size=max_token_size,
+                        min_token_size=min_token_size,
                         overlap_token_size=overlap_token_size,
                     )
                 except Exception as e:
